@@ -2,8 +2,8 @@ package wsexecutor
 
 import (
 	"context"
-	"fmt"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
