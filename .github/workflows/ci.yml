@@ -1,0 +1,95 @@
+# go-judge CI：格式与静态检查、竞态测试、跨平台构建、部署脚本语法、密钥扫描。
+# 触发：push 到 master/develop，以及指向 master/develop 的 PR（fork PR 读取基线分支上的本文件）。
+name: CI
+
+on:
+  push:
+    branches: [master, develop]
+  pull_request:
+    branches: [master, develop]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: gofmt & go vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt check
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "以下文件不符合 gofmt："
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+  test:
+    name: go test -race (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # testdata 目录被 ./... 跳过，需显式传入
+      - name: Run tests with race detector
+        run: |
+          go test -race -count=1 ./internal/... ./cmd/...
+          go test -race -count=1 ./internal/hnieoj/testdata
+
+  build-windows:
+    name: build (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # 单元测试暂不在 Windows 运行：auth 包的 0600 权限断言依赖 POSIX 权限位，
+      # 待测试增加 runtime.GOOS 跳过后再纳入测试矩阵
+      - name: Build all packages
+        run: go build ./...
+
+  deploy-script:
+    name: shell script syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: bash -n deploy scripts
+        run: |
+          set -e
+          for f in deploy/*.sh; do
+            bash -n "$f"
+            echo "syntax OK: $f"
+          done
+
+  gitleaks:
+    name: secrets scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+
+      - uses: gitleaks/gitleaks-action@f586c14365d4643c6aa59d472ae6e984bf47bb34 # v2.3.8
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
