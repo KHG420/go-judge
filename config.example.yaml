@@ -1,106 +1,93 @@
-# HnieOJ 判题节点示例配置。
-# 部署时建议复制为实际运行配置后再修改，不要直接提交真实密码、授权码或私钥。
+# HnieOJ 判题节点示例配置（统一 Ed25519 身份 + WSS，无 RabbitMQ/Nacos/共享 token）。
+# 部署时复制为实际运行配置后再修改，不要提交真实 bootstrap/私钥/AccessToken。
+#
+# 关键变化：WSS 是任务/租约/心跳/控制通道；HTTPS 只用于入网、签名测试数据下载与密钥轮换。
+# 节点身份是本地真实随机 Ed25519 keypair，首次生成后立即原子持久化，再挑战注册；
+# 重启复用同一 enrollmentId/key，不消耗新的 bootstrap。
 
 node:
-  # 判题节点名称。建议全局唯一，便于后端心跳、日志和运维定位。
+  # 判题节点名称。建议全局唯一，便于后端日志与运维定位。
   name: judge-node-01
-  # 节点类型：formal 表示正式长期节点；temp 表示临时节点。
+  # formal 表示正式长期节点；temp 表示临时扩容节点。两者都使用一次性 Bootstrap + Ed25519。
   type: formal
-  # 本节点同时处理的最大判题任务数。通常不应超过机器可承载的并发沙箱数量。
+  # 本节点处理的最大判题任务数。后端会按核准额度封顶，节点上报不能提高额度。
   maxConcurrency: 4
-  # 节点声明支持的判题模式。默认只开放 default；确认后端和题目协议闭环后再开启 spj/interactive。
+  # 支持的判题模式。未完成联调前只保留 default。
   supportedJudgeModes:
     - default
 
-remoteConfig:
-  # 是否从 Nacos 拉取非敏感运行参数。敏感信息仍建议放在本地配置或环境变量中。
-  enabled: false
-  nacos:
-    serverAddr: "http://127.0.0.1:8848"
-    namespace: "dev"
-    group: "HNIEOJ_JUDGE_GROUP"
-    dataId: "hnieoj-judge-node.yaml"
-
 hnieoj:
-  # HnieOJ 后端服务地址，节点会访问认证、测试数据、事件上报和心跳接口。
+  # 后端 HTTPS 地址。远程必须 HTTPS；仅显式回环地址允许明文 HTTP 用于本地开发。
+  # 节点不跳过证书校验，也没有 skip-cert 开关。
   baseUrl: "https://oj.example.com"
-  # 节点访问后端接口的 HTTP 超时时间。
+  # WSS 任务通道地址。留空时自动推导为 wss://<host>/ws/judge/node。
+  wssUrl: ""
+  # 签名 audience，需与服务端一致；留空时取 baseUrl 的 host。
+  audience: ""
   requestTimeout: "30s"
 
-  formalToken:
-    # formal 节点私钥路径。容器内路径通常由部署脚本挂载到该位置。
-    privateKeyPath: "/etc/hnieoj/judge-security/judge_formal_private.pem"
-    # formal token 解密算法。当前后端/节点约定为 RSA OAEP SHA-256。
-    cipherAlgorithm: "RSA/ECB/OAEPWithSHA-256AndMGF1Padding"
-    # formal 节点轮询 Nacos token 密文的间隔。
-    refreshInterval: "30s"
-    nacos:
-      serverAddr: "http://127.0.0.1:8848"
-      namespace: "dev"
-      group: "HNIEOJ_SECRET_GROUP"
-      dataId: "hnieoj-judge-formal-token.yaml"
+identity:
+  # 本地长期身份文件：包含真实随机 Ed25519 私钥、enrollmentId、nodeId/keyId、
+  # 轮换 pending/grace 状态。POSIX 目录 0700/文件 0600，Windows current-user-only ACL。
+  # 绝不能挂载进沙箱或对外返回。
+  file: "/var/lib/hnieoj-judge-node/identity.json"
+  # 运行期安全状态目录（结果持久队列等）。
+  stateDir: "/var/lib/hnieoj-judge-node"
 
-  tempToken:
-    # temp 节点授权码。部署脚本会先用它兑换 JWT，成功后再启动容器。
-    authCode: ""
-    # 部署脚本预兑换得到的 JWT。容器启动时优先使用该值作为首次凭证。
-    jwt: ""
-    # JWT 类型，通常为 Bearer。
-    tokenType: ""
-    # 后端返回的临时节点 ID。
-    nodeId: ""
-    # 后端返回的临时 token ID。
-    tokenId: ""
-    # JWT 过期时间。节点会在过期前使用 authCode 刷新。
-    expireTime: ""
+bootstrap:
+  # 一次性入网 bootstrap 明文文件（0600）。注册成功后节点删除该文件；
+  # 注册响应丢失时用同一 enrollmentId+公钥+bootstrap 重试可恢复同一 node。
+  tokenFile: "/etc/hnieoj/judge-node/bootstrap.token"
+  # 也可内联（不推荐，避免写入版本库）；该值不会出现在日志中。
+  token: ""
 
-rabbitmq:
-  # RabbitMQ 连接配置。
-  host: "127.0.0.1"
-  port: 5672
-  username: "guest"
-  password: "replace_me"
-  virtualHost: "/"
-  # 判题任务交换机、队列、路由键。
-  exchange: "hnieoj.judge.exchange"
-  queue: "hnieoj.judge.task"
-  routingKey: "judge.submission.created"
-  # 死信队列配置。超过最大重试次数后进入 DLQ。
-  deadLetterExchange: "hnieoj.judge.dlx"
-  deadLetterQueue: "hnieoj.judge.task.dlq"
-  deadLetterRoutingKey: "judge.submission.created.dlq"
-  # RabbitMQ 预取数量。通常与 node.maxConcurrency 保持一致。
-  prefetch: 4
-  # 可重试错误的最大重试次数和重试退避。
-  maxRetries: 3
-  retryBackoff: "10s"
+wss:
+  # 控制帧/任务结果帧上限。超过即关闭连接，避免无界内存。
+  controlFrameBytes: 65536
+  taskFrameBytes: 4194304
+  # 建连后完成认证的时限；单请求响应超时。
+  authDeadline: "10s"
+  requestTimeout: "30s"
+  # 掉线重连指数退避区间（带抖动）。
+  connectMinBackoff: "500ms"
+  connectMaxBackoff: "30s"
+  # AUTH_OK 未给出心跳间隔时的兜底。
+  heartbeatInterval: "30s"
+  # 单写者队列写超时。
+  writeTimeout: "10s"
+  # 终态结果有界持久队列：server TASK_RESULT_ACK 后删除。队列满即停止接新任务。
+  resultQueueDir: "/var/lib/hnieoj-judge-node/results"
+  resultMaxRecords: 256
+  resultMaxBytes: 67108864
+  resultMaxRecordBytes: 4194304
+  resultTtl: "72h"
+  resultRetryBackoff: "2s"
+
+rotation:
+  # 自动密钥轮换（prepare/confirm/query，两阶段持久状态，崩溃可恢复）。
+  enabled: true
+  # 默认 30 天；测试可注入短周期。
+  interval: "720h"
+  # 确认后旧 key 的 grace 期限，到期清理，不永久保留 old key。
+  grace: "5m"
+  confirmTimeout: "30s"
 
 testdata:
-  # 测试数据缓存目录。部署脚本会挂载宿主机持久化目录到这里。
+  # 测试数据缓存目录，部署脚本会挂载宿主机持久化目录到这里。
   cacheRoot: "/data/oj/judge-cache"
-  # 测试数据缓存最大字节数。0 表示不按容量清理。
   maxCacheBytes: 21474836480
-  # 测试数据多久未使用后可清理。0 表示不按时间清理。
   maxUnusedDuration: "72h"
-  # 缓存清理任务执行间隔。
   cleanupInterval: "1h"
-  # 心跳中的缓存和磁盘统计采样间隔，避免每次心跳都扫描磁盘。
   statsInterval: "5m"
 
 gojudge:
-  # go-judge sandbox 地址。容器部署时通常为 http://go-judge-sandbox:5050。
+  # go-judge sandbox 地址（本地/内网 HTTP 端点，与后端 HTTPS 要求无关）。
   endpoint: "http://127.0.0.1:5050"
-  # 如果 sandbox 开启了 -auth-token，这里填写对应 token；默认留空。
   authToken: ""
 
-reporter:
-  # 事件上报模式：http 表示上报后端；log/mock 适合本地调试。
-  mode: "http"
-  endpoint: "/judge/submissions/{submissionId}/events"
-
-heartbeat:
-  # 是否开启节点心跳。生产环境建议开启。
-  enabled: true
-  endpoint: "/judge/nodes/heartbeat"
-  # 生产环境建议保持 30 秒左右，不要调到 1 秒级别。
-  interval: "30s"
+worker:
+  # 空队列退避区间（有上限、带抖动）。
+  emptyMinBackoff: "200ms"
+  emptyMaxBackoff: "5s"
+  # SIGTERM 后停止领取新任务，但在该窗口内排空在途任务并继续 WSS 续租/发结果。
+  drainTimeout: "5m"

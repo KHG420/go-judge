@@ -1,96 +1,65 @@
 package auth
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
-	"encoding/pem"
-	"os"
-	"path/filepath"
+	"encoding/json"
 	"testing"
 	"time"
-
-	"github.com/criyle/go-judge/internal/hnieoj/config"
 )
 
-func TestDecryptFormalToken(t *testing.T) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
+func TestJWTExpiryReturnsMillis(t *testing.T) {
+	payload, _ := json.Marshal(map[string]any{"exp": 1893456000})
+	token := "h." + base64.RawURLEncoding.EncodeToString(payload) + ".s"
+	if got := JWTExpiryMillis(token); got != 1893456000000 {
+		t.Fatalf("JWTExpiryMillis = %d", got)
 	}
-	plain := "formal-token-value"
-	cipherText, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, &key.PublicKey, []byte(plain), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	keyPath := filepath.Join(t.TempDir(), "key.pem")
-	keyBytes, err := x509.MarshalPKCS8PrivateKey(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyBytes}), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	encryptedToken := "{rsa}" + base64.StdEncoding.EncodeToString(cipherText)
-	got, err := decryptFormalToken(config.FormalToken{
-		PrivateKeyPath:  keyPath,
-		CipherAlgorithm: "RSA/ECB/OAEPWithSHA-256AndMGF1Padding",
-	}, encryptedToken)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != plain {
-		t.Fatalf("got %q, want %q", got, plain)
+	if got := JWTExpiryMillis("not-a-jwt"); got != 0 {
+		t.Fatalf("malformed token exp = %d", got)
 	}
 }
 
-func TestParseExpireTimeWithoutZone(t *testing.T) {
-	got, err := parseExpireTime("2026-05-12T14:00:00")
-	if err != nil {
-		t.Fatal(err)
+func TestCredentialReplaceAndExpiry(t *testing.T) {
+	cred := &Credential{}
+	next := &Credential{
+		NodeID: "node-1", KeyID: "key-1", AccessToken: "token",
+		AccessExpiry: time.Now().Add(time.Minute).UnixMilli(),
+		SessionEpoch: 7, MaxConcurrency: 3, SupportedJudgeModes: []string{"default"},
 	}
-	if got.Year() != 2026 || got.Month() != time.May || got.Day() != 12 || got.Hour() != 14 {
-		t.Fatalf("unexpected expire time: %v", got)
-	}
-}
-
-func TestCredentialReplace(t *testing.T) {
-	cred := &Credential{HeaderName: "Authorization", HeaderValue: "Bearer old", NodeID: "old"}
-	next := &Credential{HeaderName: "Authorization", HeaderValue: "Bearer new", NodeID: "new", TokenID: "token-2", ExpireTime: time.Now().Add(time.Hour)}
-
 	cred.Replace(next)
-
-	if cred.HeaderValue != "Bearer new" || cred.NodeID != "new" || cred.TokenID != "token-2" || cred.ExpireTime.IsZero() {
-		t.Fatalf("credential was not replaced: %+v", cred)
+	if cred.NodeIDValue() != "node-1" || cred.KeyIDValue() != "key-1" {
+		t.Fatalf("replace did not copy identity: %+v", cred.Snapshot())
+	}
+	if cred.SessionEpochValue() != 7 || cred.AccessTokenValue() != "token" {
+		t.Fatalf("replace did not copy authorization: %+v", cred.Snapshot())
+	}
+	if cred.Expired(time.Now()) {
+		t.Fatal("credential should not be expired")
+	}
+	if !cred.Expired(time.Now().Add(2 * time.Minute)) {
+		t.Fatal("credential should be expired")
+	}
+	cred.MarkRevoked()
+	if !cred.Revoked() {
+		t.Fatal("revoked flag not set")
+	}
+	// Replace 清除 revoked，避免旧拒绝状态污染新授权。
+	cred.Replace(next)
+	if cred.Revoked() {
+		t.Fatal("replace should clear revoked")
 	}
 }
 
-func TestCredentialFromTempTokenConfig(t *testing.T) {
-	cred, err := credentialFromTempTokenConfig(config.TempToken{
-		JWT:        "jwt-value",
-		TokenType:  "Bearer",
-		NodeID:     "node-id",
-		TokenID:    "token-id",
-		ExpireTime: "2026-05-12T14:00:00",
-	})
-	if err != nil {
-		t.Fatal(err)
+func TestDeniedAndPermanentErrors(t *testing.T) {
+	if !IsDenied(&DeniedError{StatusCode: 403}) {
+		t.Fatal("DeniedError should be denied")
 	}
-	if cred.HeaderName != "Authorization" || cred.HeaderValue != "Bearer jwt-value" || cred.NodeID != "node-id" || cred.TokenID != "token-id" || cred.ExpireTime.IsZero() {
-		t.Fatalf("unexpected credential: %+v", cred)
+	if !IsDenied(ErrIdentityRejected) {
+		t.Fatal("ErrIdentityRejected should be denied")
 	}
-}
-
-func TestTempRefreshDelayRefreshesBeforeExpiry(t *testing.T) {
-	now := time.Date(2026, 6, 7, 10, 0, 0, 0, time.UTC)
-	expire := now.Add(10 * time.Minute)
-	if got := tempRefreshDelay(expire, now); got != 9*time.Minute {
-		t.Fatalf("refresh delay = %v, want 9m", got)
+	if IsDenied(&PermanentError{Code: 400}) {
+		t.Fatal("PermanentError is not a denial")
 	}
-	if got := tempRefreshDelay(now.Add(30*time.Second), now); got != 0 {
-		t.Fatalf("near-expiry refresh delay = %v, want 0", got)
+	if !IsPermanent(&PermanentError{Code: 400}) {
+		t.Fatal("PermanentError should be permanent")
 	}
 }

@@ -1,4 +1,4 @@
-FROM golang:1.25-bookworm AS builder
+FROM golang:1.26-bookworm AS builder
 
 ENV GOPROXY=https://goproxy.cn,direct \
     GOSUMDB=sum.golang.google.cn
@@ -17,6 +17,9 @@ FROM debian:bookworm-slim
 ARG DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
 
+# 国内开发时可取消注释以下行以使用阿里云的 Debian 镜像源，提升构建速度
+# RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources
+
 RUN apt-get update \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
@@ -34,6 +37,6 @@ COPY --from=builder /out/go-judge /usr/local/bin/go-judge
 COPY --from=builder /out/hnieoj-judge-node /usr/local/bin/hnieoj-judge-node
 COPY mount.yaml /opt/go-judge/mount.yaml
 
-EXPOSE 5050
+EXPOSE 3723
 
-CMD ["/usr/local/bin/go-judge", "-http-addr=:5050", "-mount-conf=/opt/go-judge/mount.yaml"]
+CMD ["/usr/local/bin/hnieoj-judge-node"]

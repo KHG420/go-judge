@@ -1,0 +1,79 @@
+# 来源：上游 criyle/go-judge 的 build.yml（合并时裁剪）。
+# 仅保留沙箱核心的单元+集成测试作业；goreleaser 发布作业已移除，本仓库发布统一走 dockerhub.yml 的 tag 触发。
+name: Build
+
+env:
+  GO_VERSION: "1.27"
+
+on:
+  push:
+    branches: [master]
+    tags: [v*]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+      - name: Enable unprivileged user namespaces
+        run: |
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          if sudo sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          unshare --user --map-root-user true
+          echo "--- kernel security state ---"
+          uname -a
+          grep -E '^(Seccomp|Seccomp_filters):' /proc/self/status
+          if command -v aa-status >/dev/null 2>&1; then
+            sudo aa-status || true
+          fi
+      - name: Build go-judge for integration tests
+        run: go build -o go-judge ./cmd/go-judge
+      - name: Run unit and integration tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./go-judge > go-judge.log 2>&1 &
+          server_pid=$!
+          cleanup() {
+            status=$?
+            kill "$server_pid" 2>/dev/null || true
+            wait "$server_pid" 2>/dev/null || true
+            if [ "$status" -ne 0 ]; then
+              echo "--- go-judge startup/runtime log ---"
+              cat go-judge.log
+            fi
+            exit "$status"
+          }
+          trap cleanup EXIT
+          ready=0
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --show-error http://localhost:5050/version; then
+              ready=1
+              break
+            fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              echo "go-judge exited during startup"
+              exit 1
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "go-judge did not become ready within 30 seconds"
+            exit 1
+          fi
+          go test ./...
+          go test -tags integration -v -count=1 ./integration_test
