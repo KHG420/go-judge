@@ -49,10 +49,12 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # testdata 目录被 ./... 跳过，需显式传入
+      # ./... 覆盖沙箱核心（env/envexec/filestore/worker 等顶层包）；
+      # integration_test 由 //go:build integration 标签隔离，不会被执行；
+      # testdata 目录被 ./... 跳过，需显式传入。
       - name: Run tests with race detector
         run: |
-          go test -race -count=1 ./internal/... ./cmd/...
+          go test -race -count=1 ./...
           go test -race -count=1 ./internal/hnieoj/testdata
 
   build-windows:
