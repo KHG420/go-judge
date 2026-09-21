@@ -1,0 +1,6 @@
+{
+  "repo": "go-judge",
+  "base": "develop",
+  "upstream": "39e22b604ce719f31af261de1a2a976e2a1d84cf",
+  "candidate": "46917742a7b7758d218962cbcd2d9f66e284a698"
+}
