@@ -1,10 +1,10 @@
 # go-judge CI：格式与静态检查、竞态测试、跨平台构建、部署脚本语法、密钥扫描。
-# 触发：push 到 master/develop，以及指向 master/develop 的 PR（fork PR 读取基线分支上的本文件）。
+# 触发：push 到 master/develop/dev，以及指向 master/develop 的 PR（fork PR 读取基线分支上的本文件）。
 name: CI
 
 on:
   push:
-    branches: [master, develop]
+    branches: [master, develop, dev]
   pull_request:
     branches: [master, develop]
 
