@@ -148,6 +148,9 @@ usage() {
 示例：
   bash deploy/dev-build-run.sh deploy
   WEBUI_HOST_PORT=8080 bash deploy/dev-build-run.sh deploy
+  GO_BUILDER_IMAGE=public.ecr.aws/docker/library/golang:1.26-bookworm \
+    DEBIAN_RUNTIME_IMAGE=public.ecr.aws/docker/library/debian:bookworm-slim \
+    DEBIAN_MIRROR=mirrors.aliyun.com bash deploy/dev-build-run.sh build
 EOF
 }
 
